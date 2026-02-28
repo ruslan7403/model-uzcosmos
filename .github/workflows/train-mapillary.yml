@@ -9,8 +9,7 @@
 #   4. Repeating until all epochs are completed
 #   5. Final model is pushed to the source branch directly
 #
-# Required secrets:
-#   MAPILLARY_ACCESS_TOKEN  — API token from mapillary.com/dashboard/developers
+# Dataset is downloaded from predefined URLs (no API token required).
 #
 # Manual trigger: Actions → "Train on Mapillary Dataset" → Run workflow
 ###############################################################################
@@ -50,7 +49,7 @@ env:
   PYTHON_VERSION: "3.11"
   # 5.5 hours in seconds — leaves 30min buffer for setup, download, push
   TRAIN_TIME_LIMIT: "19800"
-  DATASET_CACHE_KEY: "mapillary-dataset-v1"
+  DATASET_CACHE_KEY: "mapillary-dataset-links-v1"
   CHECKPOINT_BRANCH: "training-checkpoints"
 
 jobs:
@@ -88,6 +87,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -e .
 
       # ------------------------------------------------------------------ #
       # Dataset: download once, then cache across runs
@@ -101,11 +101,8 @@ jobs:
 
       - name: Download Mapillary dataset (if not cached)
         if: steps.dataset-cache.outputs.cache-hit != 'true'
-        env:
-          MAPILLARY_ACCESS_TOKEN: ${{ secrets.MAPILLARY_ACCESS_TOKEN }}
         run: |
-          python scripts/download_mapillary.py \
-            --output-dir data/mapillary
+          python scripts/download_from_links.py --output-dir data/mapillary
 
       - name: Print dataset summary
         run: |
