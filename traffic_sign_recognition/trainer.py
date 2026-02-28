@@ -143,7 +143,7 @@ def train(
         scheduler.load_state_dict(ckpt["scheduler_state_dict"])
         start_epoch = ckpt["epoch"] + 1
         best_loss = ckpt["best_loss"]
-        epochs = max(epochs, ckpt["total_epochs"])
+        # Keep current run's epochs (do not override with checkpoint's total_epochs)
         print(f"  Resumed at epoch {start_epoch + 1}/{epochs}, "
               f"best_loss={best_loss:.4f}")
 
