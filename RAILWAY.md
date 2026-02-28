@@ -43,11 +43,14 @@ In the same service, open **Variables** and add:
 | `DATA_ROOT`    | `/data`         | Root for dataset and output    |
 | `DATA_DIR`     | `/data/mapillary` | Dataset directory (optional) |
 | `OUTPUT_DIR`   | `/data/output`  | Model checkpoints and artifacts (optional) |
-| `EPOCHS`       | `100`           | Default 100 if unset           |
+| `EPOCHS`       | `100`           | Embedding training epochs (set `1` for a quick run) |
+| `YOLO_EPOCHS`  | `30`            | YOLO detector training epochs (default 30) |
 | `BATCH_SIZE`   | `32`            | Default 32 if unset            |
 | `TRIPLETS_PER_EPOCH` | `10000` | Default 10000 if unset   |
 
 If you only set **`DATA_ROOT=/data`**, the script uses `/data/mapillary` and `/data/output` by default.
+
+**Quick run (1 epoch + YOLO):** Set `EPOCHS=1` to train the embedding model for one epoch only, then the script still runs YOLO detector training. Your tar from `/data/output` will include `best_model.pth`, `checkpoint.pt`, and `traffic_sign_yolo.pt`.
 
 ---
 
@@ -76,7 +79,8 @@ If your repo has no `scripts/run_railway.sh` yet, add it (see repo) and push to 
 3. The script will:
    - `pip install -r requirements.txt` and `pip install -e .`
    - Run `download_dataset.py` → writes to `/data/mapillary` (~110 GB).
-   - Run `train.py` → reads `/data/mapillary`, writes to `/data/output`.
+   - Run `train.py` → reads `/data/mapillary`, writes to `/data/output` (embedding model: `best_model.pth`, `checkpoint.pt`).
+   - Run `train_yolo_detector.py` → builds synthetic sign images, fine-tunes YOLOv8 to detect only traffic signs, writes `traffic_sign_yolo.pt` to `/data/output`.
 
 **First run:** Download can take **several hours** (e.g. 3–12 h depending on connection). Training after that can take **~12–24 hours** on CPU. Check **Logs** in the Railway dashboard to follow progress.
 
@@ -85,9 +89,9 @@ If your repo has no `scripts/run_railway.sh` yet, add it (see repo) and push to 
 ## 7. Getting the trained model
 
 - **Outputs** are under the volume at **`/data/output`**, e.g.:
-  - `best_model.pth`, `final_model.pth`
-  - `gallery.json`, `gallery.npz`
-  - `checkpoint.pt`, `training_status.json`
+  - `best_model.pth`, `checkpoint.pt` (embedding model)
+  - `traffic_sign_yolo.pt` (custom YOLO detector — use this so only signs are detected, not people/cars)
+  - `gallery.json`, `gallery.npz` (built after full training or via `build_gallery.py`)
 - Railway doesn’t expose the volume as a direct download. Options:
   - **One-off shell:** Use **Run Command** (or a temporary shell) and run e.g. `tar czf /tmp/out.tar.gz /data/output` then use a file server or `railway run` to pull it.
   - **Persist in repo:** Add a small script that uploads `output/*.pth` and `output/gallery.*` to S3/GCS or pushes to GitHub Releases from inside the container (using a token in env).

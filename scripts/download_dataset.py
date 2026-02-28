@@ -274,6 +274,19 @@ def main():
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
 
+    # Skip if dataset already present (e.g. after Railway redeploy with same volume)
+    existing_classes = 0
+    if os.path.isdir(output_dir):
+        for sub in Path(output_dir).iterdir():
+            if sub.is_dir() and not sub.name.startswith("."):
+                n_images = sum(1 for f in sub.rglob("*") if f.is_file() and is_image(f.name))
+                if n_images > 0:
+                    existing_classes += 1
+    if existing_classes >= 3:
+        print(f"Dataset already present at {output_dir} ({existing_classes} class dirs with images). Skipping download.")
+        print("To re-download, remove or rename the output directory and run again.")
+        return
+
     # Create temp directory for downloads
     temp_dir = tempfile.mkdtemp(prefix="traffic_signs_")
     download_dir = os.path.join(temp_dir, "downloads")

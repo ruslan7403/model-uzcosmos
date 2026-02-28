@@ -283,6 +283,7 @@ def build_gallery(
     device: str = "cpu",
     image_size: int = 224,
     similarity_threshold: float = 0.6,
+    max_samples: int | None = None,
 ) -> SignGallery:
     """Build a gallery by embedding all images in a data directory.
 
@@ -292,6 +293,7 @@ def build_gallery(
         device: Torch device.
         image_size: Input image size.
         similarity_threshold: Gallery similarity threshold.
+        max_samples: If set, use at most this many images (for quick testing).
 
     Returns:
         Populated SignGallery.
@@ -300,6 +302,8 @@ def build_gallery(
     gallery = SignGallery(similarity_threshold=similarity_threshold)
 
     dataset = ClassImageDataset(data_dir=data_dir, transform=get_eval_transforms(image_size))
+    if max_samples is not None and max_samples < len(dataset):
+        dataset = torch.utils.data.Subset(dataset, range(max_samples))
     loader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=0)
 
     with torch.no_grad():
