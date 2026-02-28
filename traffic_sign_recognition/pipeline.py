@@ -70,12 +70,30 @@ class DetectionRecognitionPipeline:
         Returns:
             Loaded DetectionRecognitionPipeline instance.
         """
-        detector = TrafficSignDetector(
-            model_path=yolo_model_path,
-            confidence_threshold=detection_confidence,
-            target_classes=target_classes,
-            device=device,
-        )
+        # Auto-detect custom YOLO model trained specifically for traffic signs
+        use_all_objects = False
+        if yolo_model_path == "yolov8n.pt":
+            custom_yolo = os.path.join(
+                os.path.dirname(embedding_model_path), "traffic_sign_yolo.pt"
+            )
+            if os.path.exists(custom_yolo):
+                yolo_model_path = custom_yolo
+                use_all_objects = True  # custom model only detects signs
+
+        if use_all_objects:
+            from traffic_sign_recognition.detector import AllObjectDetector
+            detector = AllObjectDetector(
+                model_path=yolo_model_path,
+                confidence_threshold=detection_confidence,
+                device=device,
+            )
+        else:
+            detector = TrafficSignDetector(
+                model_path=yolo_model_path,
+                confidence_threshold=detection_confidence,
+                target_classes=target_classes,
+                device=device,
+            )
         recognizer = TrafficSignRecognizer.load(
             model_path=embedding_model_path,
             gallery_path=gallery_path,

@@ -104,11 +104,26 @@ def main():
         base, ext = os.path.splitext(args.image)
         output_path = f"{base}_detected{ext or '.jpg'}"
 
+    # Auto-detect custom YOLO model if not explicitly specified
+    yolo_model = args.yolo_model
+    use_detect_all = args.detect_all
+
+    if yolo_model == "yolov8n.pt" and not args.detect_all:
+        # Check if a custom traffic sign YOLO model exists
+        custom_model = os.path.join(
+            os.path.dirname(args.embedding_model), "traffic_sign_yolo.pt"
+        )
+        if os.path.exists(custom_model):
+            print(f"Found custom YOLO detector: {custom_model}")
+            print("  Using it instead of generic COCO model (signs only, no people/cars)")
+            yolo_model = custom_model
+            use_detect_all = True
+
     # Build the pipeline
-    if args.detect_all:
+    if use_detect_all:
         from traffic_sign_recognition.detector import AllObjectDetector
         detector = AllObjectDetector(
-            model_path=args.yolo_model,
+            model_path=yolo_model,
             confidence_threshold=args.detection_conf,
             device=args.device,
         )
@@ -118,7 +133,7 @@ def main():
         if target is None:
             target = list(TrafficSignDetector.TRAFFIC_COCO_CLASSES)
         detector = TrafficSignDetector(
-            model_path=args.yolo_model,
+            model_path=yolo_model,
             confidence_threshold=args.detection_conf,
             target_classes=target,
             device=args.device,

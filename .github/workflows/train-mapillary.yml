@@ -194,6 +194,30 @@ jobs:
         run: cat output/training_status.json
 
       # ------------------------------------------------------------------ #
+      # Train YOLO detector (only when embedding training completes)
+      # ------------------------------------------------------------------ #
+      - name: Train YOLO traffic sign detector
+        run: |
+          completed=$(python -c "
+          import json
+          with open('output/training_status.json') as f:
+              s = json.load(f)
+          print('true' if s['completed'] else 'false')
+          ")
+          if [ "$completed" = "true" ]; then
+            echo "Embedding training complete — training YOLO detector..."
+            python scripts/train_yolo_detector.py \
+              --sign-dir data/mapillary \
+              --output-dir output \
+              --epochs 50 \
+              --num-train 2000 \
+              --num-val 400 \
+              --batch-size 16
+          else
+            echo "Embedding training not complete yet, skipping YOLO detector training"
+          fi
+
+      # ------------------------------------------------------------------ #
       # Push checkpoint + model to the checkpoint branch
       # ------------------------------------------------------------------ #
       - name: Push checkpoint to repo
@@ -219,7 +243,8 @@ jobs:
 
           git add output/checkpoint.pt output/training_status.json \
                   output/best_model.pth output/final_model.pth \
-                  output/gallery.json output/gallery.npz 2>/dev/null || true
+                  output/gallery.json output/gallery.npz \
+                  output/traffic_sign_yolo.pt 2>/dev/null || true
 
           git commit -m "Training run #${{ github.event.inputs.run_number }} checkpoint
 
@@ -265,7 +290,8 @@ jobs:
           mkdir -p output
           git add output/best_model.pth output/final_model.pth \
                   output/gallery.json output/gallery.npz \
-                  output/training_status.json
+                  output/training_status.json \
+                  output/traffic_sign_yolo.pt 2>/dev/null || true
 
           git commit -m "Add trained model from traffic sign dataset (100% complete)
 
@@ -318,5 +344,6 @@ jobs:
           echo "  - output/final_model.pth"
           echo "  - output/gallery.json"
           echo "  - output/gallery.npz"
+          echo "  - output/traffic_sign_yolo.pt (YOLO detector for signs only)"
           echo ""
           cat output/training_status.json
