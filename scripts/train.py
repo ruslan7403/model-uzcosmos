@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """Training script for the traffic sign embedding model.
 
+Supports checkpointing and time-limited training for CI/CD workflows
+(e.g. GitHub Actions 6-hour limit).
+
 Usage:
+    # Normal training
     python scripts/train.py --data-dir data/train --output-dir output
 
-The data directory should have the structure:
-    data/train/
-        stop_sign/
-            img1.jpg
-            img2.jpg
-        speed_limit_50/
-            img1.jpg
-            ...
+    # Time-limited with checkpoint resume (for CI/CD)
+    python scripts/train.py --data-dir data/train --output-dir output \
+        --time-limit 19800 --checkpoint output/checkpoint.pt
 """
 
 import argparse
@@ -41,6 +40,18 @@ def main():
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--gallery-threshold", type=float, default=0.6)
+    parser.add_argument(
+        "--checkpoint", type=str, default=None,
+        help="Path to checkpoint file to resume training from",
+    )
+    parser.add_argument(
+        "--time-limit", type=float, default=None,
+        help="Maximum training time in seconds (e.g. 19800 for 5.5 hours)",
+    )
+    parser.add_argument(
+        "--checkpoint-interval", type=int, default=1,
+        help="Save checkpoint every N epochs (default: 1)",
+    )
 
     args = parser.parse_args()
 
@@ -56,6 +67,9 @@ def main():
         image_size=args.image_size,
         device=args.device,
         gallery_threshold=args.gallery_threshold,
+        checkpoint_path=args.checkpoint,
+        time_limit_seconds=args.time_limit,
+        checkpoint_interval=args.checkpoint_interval,
     )
 
     print(f"\nTraining complete!")

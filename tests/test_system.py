@@ -16,6 +16,7 @@ from PIL import Image, ImageDraw
 from traffic_sign_recognition.gallery import SignGallery
 from traffic_sign_recognition.model import EmbeddingNet, TripletLoss
 from traffic_sign_recognition.recognizer import TrafficSignRecognizer
+from traffic_sign_recognition.trainer import save_checkpoint, load_checkpoint
 from traffic_sign_recognition.visualize import AnnotatedDetection, draw_detections, draw_detections_with_panel
 from traffic_sign_recognition.detector import Detection
 
@@ -527,3 +528,110 @@ class TestPipelineCropLogic:
         # Should not exceed image bounds
         assert crop.size[0] <= 200
         assert crop.size[1] <= 200
+
+
+class TestCheckpointing:
+    """Tests for training checkpoint save/resume."""
+
+    def test_save_and_load_checkpoint(self):
+        model = EmbeddingNet(embedding_dim=64, pretrained=False)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt_path = os.path.join(tmpdir, "checkpoint.pt")
+
+            save_checkpoint(
+                path=ckpt_path,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                epoch=5,
+                best_loss=0.15,
+                total_epochs=30,
+                embedding_dim=64,
+                learning_rate=1e-4,
+                margin=0.3,
+            )
+
+            assert os.path.exists(ckpt_path)
+
+            ckpt = load_checkpoint(ckpt_path, device="cpu")
+            assert ckpt["epoch"] == 5
+            assert ckpt["best_loss"] == 0.15
+            assert ckpt["total_epochs"] == 30
+            assert ckpt["embedding_dim"] == 64
+            assert "model_state_dict" in ckpt
+            assert "optimizer_state_dict" in ckpt
+            assert "scheduler_state_dict" in ckpt
+
+    def test_checkpoint_restores_model_state(self):
+        model = EmbeddingNet(embedding_dim=64, pretrained=False)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10)
+
+        # Get model output before saving
+        model.eval()
+        test_input = torch.randn(1, 3, 224, 224)
+        with torch.no_grad():
+            original_output = model(test_input)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt_path = os.path.join(tmpdir, "checkpoint.pt")
+            save_checkpoint(
+                ckpt_path, model, optimizer, scheduler,
+                epoch=3, best_loss=0.2, total_epochs=10,
+                embedding_dim=64, learning_rate=1e-4, margin=0.3,
+            )
+
+            # Load into a fresh model
+            new_model = EmbeddingNet(embedding_dim=64, pretrained=False)
+            ckpt = load_checkpoint(ckpt_path, device="cpu")
+            new_model.load_state_dict(ckpt["model_state_dict"])
+            new_model.eval()
+
+            with torch.no_grad():
+                restored_output = new_model(test_input)
+
+            assert torch.allclose(original_output, restored_output, atol=1e-6)
+
+    def test_time_limited_training(self):
+        """Verify training respects time limits and saves checkpoint."""
+        from unittest.mock import patch
+        from traffic_sign_recognition.trainer import train
+        from traffic_sign_recognition.model import EmbeddingNet as _EmbNet
+
+        # Patch EmbeddingNet to avoid downloading pretrained weights
+        original_init = _EmbNet.__init__
+        def patched_init(self, embedding_dim=128, pretrained=True):
+            original_init(self, embedding_dim=embedding_dim, pretrained=False)
+
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch.object(_EmbNet, "__init__", patched_init):
+            data_dir = os.path.join(tmpdir, "data")
+            output_dir = os.path.join(tmpdir, "output")
+            create_test_dataset(data_dir, num_classes=3, images_per_class=4)
+
+            # Train with a very short time limit (1 second)
+            model, gallery = train(
+                data_dir=data_dir,
+                output_dir=output_dir,
+                embedding_dim=64,
+                epochs=1000,  # way more than 1s can do
+                batch_size=4,
+                triplets_per_epoch=100,
+                time_limit_seconds=1.0,
+                checkpoint_interval=1,
+            )
+
+            # Should have saved a training status
+            import json
+            with open(os.path.join(output_dir, "training_status.json")) as f:
+                status = json.load(f)
+
+            # Should NOT have completed all 1000 epochs
+            assert status["completed"] is False
+            assert status["epochs_done"] < 1000
+
+            # Should have saved a checkpoint
+            assert os.path.exists(os.path.join(output_dir, "checkpoint.pt"))

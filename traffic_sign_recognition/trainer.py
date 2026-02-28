@@ -1,10 +1,13 @@
 """Training pipeline for the traffic sign embedding model.
 
 Trains the EmbeddingNet using triplet loss on a directory of traffic sign
-images organized by class.
+images organized by class. Supports checkpointing and time-limited training
+for use in CI/CD workflows with run-time limits.
 """
 
+import json
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +26,58 @@ from traffic_sign_recognition.gallery import SignGallery
 from traffic_sign_recognition.model import EmbeddingNet, TripletLoss
 
 
+def save_checkpoint(
+    path: str,
+    model: EmbeddingNet,
+    optimizer: optim.Optimizer,
+    scheduler,
+    epoch: int,
+    best_loss: float,
+    total_epochs: int,
+    embedding_dim: int,
+    learning_rate: float,
+    margin: float,
+) -> None:
+    """Save a full training checkpoint for resuming later.
+
+    Args:
+        path: File path to save the checkpoint (.pt).
+        model: Current model state.
+        optimizer: Current optimizer state.
+        scheduler: Current scheduler state.
+        epoch: Last completed epoch (0-indexed).
+        best_loss: Best loss seen so far.
+        total_epochs: Target number of epochs.
+        embedding_dim: Model embedding dimension.
+        learning_rate: Initial learning rate.
+        margin: Triplet loss margin.
+    """
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "epoch": epoch,
+        "best_loss": best_loss,
+        "total_epochs": total_epochs,
+        "embedding_dim": embedding_dim,
+        "learning_rate": learning_rate,
+        "margin": margin,
+    }, path)
+
+
+def load_checkpoint(path: str, device: str = "cpu") -> dict:
+    """Load a training checkpoint.
+
+    Args:
+        path: Path to checkpoint file (.pt).
+        device: Device to map tensors to.
+
+    Returns:
+        Checkpoint dictionary with all saved state.
+    """
+    return torch.load(path, map_location=device, weights_only=False)
+
+
 def train(
     data_dir: str,
     output_dir: str = "output",
@@ -35,8 +90,14 @@ def train(
     image_size: int = 224,
     device: str = None,
     gallery_threshold: float = 0.6,
+    checkpoint_path: str = None,
+    time_limit_seconds: float = None,
+    checkpoint_interval: int = 1,
 ) -> tuple[EmbeddingNet, SignGallery]:
     """Train the embedding model and build a gallery from training data.
+
+    Supports resuming from a checkpoint and stopping after a time limit,
+    making it suitable for CI/CD environments with run-time caps.
 
     Args:
         data_dir: Directory containing class subdirectories of images.
@@ -50,6 +111,10 @@ def train(
         image_size: Input image size.
         device: Torch device (auto-detected if None).
         gallery_threshold: Similarity threshold for gallery matching.
+        checkpoint_path: Path to a checkpoint file to resume from.
+        time_limit_seconds: Maximum training time in seconds. Training
+            stops gracefully after this limit. None means no limit.
+        checkpoint_interval: Save a checkpoint every N epochs.
 
     Returns:
         Tuple of (trained model, populated gallery).
@@ -60,11 +125,27 @@ def train(
     print(f"Training on device: {device}")
     os.makedirs(output_dir, exist_ok=True)
 
+    start_epoch = 0
+    best_loss = float("inf")
+
     # Initialize model, loss, optimizer
     model = EmbeddingNet(embedding_dim=embedding_dim, pretrained=True).to(device)
     criterion = TripletLoss(margin=margin)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+
+    # Resume from checkpoint if provided
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        print(f"Resuming from checkpoint: {checkpoint_path}")
+        ckpt = load_checkpoint(checkpoint_path, device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        start_epoch = ckpt["epoch"] + 1
+        best_loss = ckpt["best_loss"]
+        epochs = max(epochs, ckpt["total_epochs"])
+        print(f"  Resumed at epoch {start_epoch + 1}/{epochs}, "
+              f"best_loss={best_loss:.4f}")
 
     # Create training dataset
     train_dataset = TripletTrafficSignDataset(
@@ -81,11 +162,27 @@ def train(
     )
 
     print(f"Found {len(train_dataset.classes)} classes: {train_dataset.classes}")
-    print(f"Training for {epochs} epochs with {triplets_per_epoch} triplets/epoch")
+    print(f"Training epochs {start_epoch + 1} to {epochs} "
+          f"with {triplets_per_epoch} triplets/epoch")
+    if time_limit_seconds:
+        print(f"Time limit: {time_limit_seconds:.0f}s "
+              f"({time_limit_seconds / 3600:.1f}h)")
 
     # Training loop
-    best_loss = float("inf")
-    for epoch in range(epochs):
+    train_start_time = time.time()
+    stopped_early = False
+    last_completed_epoch = start_epoch - 1
+
+    for epoch in range(start_epoch, epochs):
+        # Check time limit before starting a new epoch
+        if time_limit_seconds:
+            elapsed = time.time() - train_start_time
+            if elapsed >= time_limit_seconds:
+                print(f"\nTime limit reached ({elapsed:.0f}s). "
+                      f"Stopping at epoch {epoch}/{epochs}.")
+                stopped_early = True
+                break
+
         model.train()
         epoch_losses = []
 
@@ -110,13 +207,61 @@ def train(
             epoch_losses.append(loss.item())
             progress.set_postfix(loss=f"{loss.item():.4f}")
 
+            # Check time limit mid-epoch for very long epochs
+            if time_limit_seconds:
+                elapsed = time.time() - train_start_time
+                if elapsed >= time_limit_seconds:
+                    print(f"\nTime limit reached mid-epoch ({elapsed:.0f}s).")
+                    stopped_early = True
+                    break
+
+        if stopped_early:
+            # Save checkpoint even on early stop
+            save_checkpoint(
+                os.path.join(output_dir, "checkpoint.pt"),
+                model, optimizer, scheduler,
+                last_completed_epoch,
+                best_loss, epochs, embedding_dim, learning_rate, margin,
+            )
+            break
+
         scheduler.step()
         avg_loss = np.mean(epoch_losses)
-        print(f"Epoch {epoch + 1}/{epochs} - Avg Loss: {avg_loss:.4f}")
+        last_completed_epoch = epoch
+        elapsed = time.time() - train_start_time
+        print(f"Epoch {epoch + 1}/{epochs} - "
+              f"Avg Loss: {avg_loss:.4f} - "
+              f"Elapsed: {elapsed:.0f}s")
 
         if avg_loss < best_loss:
             best_loss = avg_loss
-            torch.save(model.state_dict(), os.path.join(output_dir, "best_model.pth"))
+            torch.save(model.state_dict(),
+                       os.path.join(output_dir, "best_model.pth"))
+
+        # Save periodic checkpoint
+        if (epoch + 1) % checkpoint_interval == 0:
+            save_checkpoint(
+                os.path.join(output_dir, "checkpoint.pt"),
+                model, optimizer, scheduler,
+                epoch, best_loss, epochs,
+                embedding_dim, learning_rate, margin,
+            )
+
+    # Save training status
+    completed = not stopped_early and (last_completed_epoch + 1 >= epochs)
+    status = {
+        "completed": completed,
+        "epochs_done": last_completed_epoch + 1,
+        "total_epochs": epochs,
+        "best_loss": float(best_loss),
+        "elapsed_seconds": time.time() - train_start_time,
+    }
+    with open(os.path.join(output_dir, "training_status.json"), "w") as f:
+        json.dump(status, f, indent=2)
+
+    print(f"\nTraining status: {'COMPLETED' if completed else 'PAUSED'}")
+    print(f"  Epochs done: {status['epochs_done']}/{epochs}")
+    print(f"  Best loss: {best_loss:.4f}")
 
     # Save final model
     torch.save(model.state_dict(), os.path.join(output_dir, "final_model.pth"))

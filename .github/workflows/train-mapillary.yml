@@ -1,0 +1,256 @@
+###############################################################################
+# Continuous Training Workflow for Mapillary Traffic Sign Dataset
+#
+# Trains the embedding model on ALL Mapillary traffic sign images.
+# Handles GitHub's 6-hour workflow time limit by:
+#   1. Training for ~5.5 hours (leaving 30min buffer for setup/upload)
+#   2. Saving a checkpoint artifact
+#   3. Waiting 5 minutes, then re-triggering itself to continue
+#   4. Repeating until all epochs are completed
+#
+# Required secrets:
+#   MAPILLARY_ACCESS_TOKEN  — API token from mapillary.com/dashboard/developers
+#
+# Manual trigger: Actions → "Train on Mapillary Dataset" → Run workflow
+###############################################################################
+
+name: Train on Mapillary Dataset
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_number:
+        description: "Chain run number (auto-incremented, start at 1)"
+        required: false
+        default: "1"
+      continue_training:
+        description: "Set to 'true' when auto-continuing from a previous run"
+        required: false
+        default: "false"
+      epochs:
+        description: "Total training epochs"
+        required: false
+        default: "100"
+      batch_size:
+        description: "Training batch size"
+        required: false
+        default: "32"
+      triplets_per_epoch:
+        description: "Triplets sampled per epoch"
+        required: false
+        default: "10000"
+
+# Only allow one training chain at a time
+concurrency:
+  group: mapillary-training
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  # 5.5 hours in seconds — leaves 30min buffer for setup, download, upload
+  TRAIN_TIME_LIMIT: "19800"
+  DATASET_CACHE_KEY: "mapillary-dataset-v1"
+
+jobs:
+  train:
+    name: "Training run #${{ github.event.inputs.run_number }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 355  # just under 6 hours
+
+    steps:
+      # ------------------------------------------------------------------ #
+      # Setup
+      # ------------------------------------------------------------------ #
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ------------------------------------------------------------------ #
+      # Dataset: download once, then cache across runs
+      # ------------------------------------------------------------------ #
+      - name: Restore dataset cache
+        id: dataset-cache
+        uses: actions/cache@v4
+        with:
+          path: data/mapillary
+          key: ${{ env.DATASET_CACHE_KEY }}
+
+      - name: Download Mapillary dataset (if not cached)
+        if: steps.dataset-cache.outputs.cache-hit != 'true'
+        env:
+          MAPILLARY_ACCESS_TOKEN: ${{ secrets.MAPILLARY_ACCESS_TOKEN }}
+        run: |
+          python scripts/download_mapillary.py \
+            --output-dir data/mapillary
+
+      - name: Print dataset summary
+        run: |
+          echo "=== Dataset summary ==="
+          total=0
+          for dir in data/mapillary/*/; do
+            if [ -d "$dir" ]; then
+              name=$(basename "$dir")
+              count=$(find "$dir" -maxdepth 1 -type f \( -name "*.jpg" -o -name "*.png" \) | wc -l)
+              if [ "$count" -gt 0 ]; then
+                echo "  $name: $count images"
+                total=$((total + count))
+              fi
+            fi
+          done
+          echo "  TOTAL: $total images"
+
+      # ------------------------------------------------------------------ #
+      # Restore checkpoint from previous run (if continuing)
+      # ------------------------------------------------------------------ #
+      - name: Download checkpoint from previous run
+        if: github.event.inputs.continue_training == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: training-checkpoint
+          path: output/
+        continue-on-error: true  # first run has no checkpoint
+
+      - name: Show checkpoint status
+        run: |
+          if [ -f output/checkpoint.pt ]; then
+            echo "Checkpoint found — will resume training"
+            cat output/training_status.json 2>/dev/null || echo "(no status file yet)"
+          else
+            echo "No checkpoint — starting fresh"
+          fi
+
+      # ------------------------------------------------------------------ #
+      # Train (time-limited with checkpointing)
+      # ------------------------------------------------------------------ #
+      - name: Train model
+        run: |
+          CHECKPOINT_ARG=""
+          if [ -f output/checkpoint.pt ]; then
+            CHECKPOINT_ARG="--checkpoint output/checkpoint.pt"
+          fi
+
+          python scripts/train.py \
+            --data-dir data/mapillary \
+            --output-dir output \
+            --epochs ${{ github.event.inputs.epochs }} \
+            --batch-size ${{ github.event.inputs.batch_size }} \
+            --triplets-per-epoch ${{ github.event.inputs.triplets_per_epoch }} \
+            --embedding-dim 128 \
+            --learning-rate 1e-4 \
+            --margin 0.3 \
+            --image-size 224 \
+            --gallery-threshold 0.6 \
+            --time-limit ${{ env.TRAIN_TIME_LIMIT }} \
+            --checkpoint-interval 1 \
+            $CHECKPOINT_ARG
+
+      - name: Print training status
+        run: cat output/training_status.json
+
+      # ------------------------------------------------------------------ #
+      # Upload artifacts
+      # ------------------------------------------------------------------ #
+      - name: Upload training checkpoint
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-checkpoint
+          path: |
+            output/checkpoint.pt
+            output/training_status.json
+            output/best_model.pth
+          retention-days: 30
+          overwrite: true
+
+      - name: Upload trained model and gallery
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-model-run-${{ github.event.inputs.run_number }}
+          path: |
+            output/best_model.pth
+            output/final_model.pth
+            output/gallery.json
+            output/gallery.npz
+            output/training_status.json
+          retention-days: 90
+
+      # ------------------------------------------------------------------ #
+      # Check if training is done; if not, wait 5 min and re-trigger
+      # ------------------------------------------------------------------ #
+      - name: Check if training is complete
+        id: check-done
+        run: |
+          completed=$(python -c "
+          import json
+          with open('output/training_status.json') as f:
+              status = json.load(f)
+          print('true' if status['completed'] else 'false')
+          ")
+          echo "completed=$completed" >> "$GITHUB_OUTPUT"
+
+          epochs_done=$(python -c "
+          import json
+          with open('output/training_status.json') as f:
+              status = json.load(f)
+          print(status['epochs_done'])
+          ")
+          echo "epochs_done=$epochs_done" >> "$GITHUB_OUTPUT"
+
+          echo "Training completed: $completed (epochs done: $epochs_done)"
+
+      - name: Wait 5 minutes before continuing
+        if: steps.check-done.outputs.completed == 'false'
+        run: |
+          echo "Training not complete (${{ steps.check-done.outputs.epochs_done }}/${{ github.event.inputs.epochs }} epochs)."
+          echo "Waiting 5 minutes before triggering next run..."
+          sleep 300
+
+      - name: Trigger next training run
+        if: steps.check-done.outputs.completed == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NEXT_RUN=$(( ${{ github.event.inputs.run_number }} + 1 ))
+          echo "Triggering run #${NEXT_RUN}..."
+
+          gh workflow run train-mapillary.yml \
+            --ref ${{ github.ref_name }} \
+            -f run_number="${NEXT_RUN}" \
+            -f continue_training="true" \
+            -f epochs="${{ github.event.inputs.epochs }}" \
+            -f batch_size="${{ github.event.inputs.batch_size }}" \
+            -f triplets_per_epoch="${{ github.event.inputs.triplets_per_epoch }}"
+
+          echo "Next run triggered successfully!"
+
+      - name: Training complete summary
+        if: steps.check-done.outputs.completed == 'true'
+        run: |
+          echo "============================================="
+          echo "   TRAINING COMPLETE!"
+          echo "============================================="
+          echo ""
+          echo "Total runs: ${{ github.event.inputs.run_number }}"
+          echo "Epochs completed: ${{ steps.check-done.outputs.epochs_done }}"
+          echo ""
+          echo "Artifacts available:"
+          echo "  - trained-model-run-${{ github.event.inputs.run_number }}"
+          echo "    Contains: best_model.pth, gallery.json, gallery.npz"
+          echo ""
+          echo "Download from: Actions → this run → Artifacts"
+          cat output/training_status.json
