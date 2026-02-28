@@ -3,10 +3,11 @@
 #
 # Trains the embedding model on ALL Mapillary traffic sign images.
 # Handles GitHub's 6-hour workflow time limit by:
-#   1. Training for ~5.5 hours (leaving 30min buffer for setup/upload)
-#   2. Saving a checkpoint artifact
+#   1. Training for ~5.5 hours (leaving 30min buffer for setup/push)
+#   2. Pushing checkpoint + model to a dedicated branch (training-checkpoints)
 #   3. Waiting 5 minutes, then re-triggering itself to continue
 #   4. Repeating until all epochs are completed
+#   5. Final model is pushed to the source branch directly
 #
 # Required secrets:
 #   MAPILLARY_ACCESS_TOKEN  — API token from mapillary.com/dashboard/developers
@@ -47,9 +48,10 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.11"
-  # 5.5 hours in seconds — leaves 30min buffer for setup, download, upload
+  # 5.5 hours in seconds — leaves 30min buffer for setup, download, push
   TRAIN_TIME_LIMIT: "19800"
   DATASET_CACHE_KEY: "mapillary-dataset-v1"
+  CHECKPOINT_BRANCH: "training-checkpoints"
 
 jobs:
   train:
@@ -57,12 +59,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 355  # just under 6 hours
 
+    permissions:
+      contents: write
+
     steps:
       # ------------------------------------------------------------------ #
       # Setup
       # ------------------------------------------------------------------ #
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
@@ -116,20 +124,35 @@ jobs:
           echo "  TOTAL: $total images"
 
       # ------------------------------------------------------------------ #
-      # Restore checkpoint from previous run (if continuing)
+      # Restore checkpoint from the checkpoint branch (if continuing)
       # ------------------------------------------------------------------ #
-      - name: Download checkpoint from previous run
+      - name: Restore checkpoint from repo
         if: github.event.inputs.continue_training == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: training-checkpoint
-          path: output/
-        continue-on-error: true  # first run has no checkpoint
+        run: |
+          # Check if the checkpoint branch exists on the remote
+          if git ls-remote --exit-code --heads origin "$CHECKPOINT_BRANCH" >/dev/null 2>&1; then
+            echo "Fetching checkpoint from branch: $CHECKPOINT_BRANCH"
+            git fetch origin "$CHECKPOINT_BRANCH"
+
+            # Extract just the output/ files from that branch
+            mkdir -p output
+            git checkout "origin/$CHECKPOINT_BRANCH" -- output/ 2>/dev/null || true
+
+            if [ -f output/checkpoint.pt ]; then
+              echo "Checkpoint restored successfully"
+              cat output/training_status.json 2>/dev/null || true
+            else
+              echo "No checkpoint.pt found on $CHECKPOINT_BRANCH"
+            fi
+          else
+            echo "Checkpoint branch does not exist yet — starting fresh"
+          fi
 
       - name: Show checkpoint status
         run: |
           if [ -f output/checkpoint.pt ]; then
             echo "Checkpoint found — will resume training"
+            ls -lh output/checkpoint.pt
             cat output/training_status.json 2>/dev/null || echo "(no status file yet)"
           else
             echo "No checkpoint — starting fresh"
@@ -164,33 +187,46 @@ jobs:
         run: cat output/training_status.json
 
       # ------------------------------------------------------------------ #
-      # Upload artifacts
+      # Push checkpoint + model to the checkpoint branch
       # ------------------------------------------------------------------ #
-      - name: Upload training checkpoint
-        uses: actions/upload-artifact@v4
-        with:
-          name: training-checkpoint
-          path: |
-            output/checkpoint.pt
-            output/training_status.json
-            output/best_model.pth
-          retention-days: 30
-          overwrite: true
+      - name: Push checkpoint to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Upload trained model and gallery
-        uses: actions/upload-artifact@v4
-        with:
-          name: trained-model-run-${{ github.event.inputs.run_number }}
-          path: |
-            output/best_model.pth
-            output/final_model.pth
-            output/gallery.json
-            output/gallery.npz
-            output/training_status.json
-          retention-days: 90
+          # Create an orphan checkpoint branch if it doesn't exist,
+          # or check it out if it does
+          if git ls-remote --exit-code --heads origin "$CHECKPOINT_BRANCH" >/dev/null 2>&1; then
+            git fetch origin "$CHECKPOINT_BRANCH"
+            git checkout "$CHECKPOINT_BRANCH"
+          else
+            git checkout --orphan "$CHECKPOINT_BRANCH"
+            git rm -rf . 2>/dev/null || true
+          fi
+
+          # Copy output files into the branch
+          mkdir -p output
+          git checkout "${{ github.ref_name }}" -- . 2>/dev/null || true
+          # The training output files are in the working directory already
+          # (they persist across git checkout since they're untracked)
+
+          git add output/checkpoint.pt output/training_status.json \
+                  output/best_model.pth output/final_model.pth \
+                  output/gallery.json output/gallery.npz 2>/dev/null || true
+
+          git commit -m "Training run #${{ github.event.inputs.run_number }} checkpoint
+
+          Epochs: $(python -c "import json; s=json.load(open('output/training_status.json')); print(f\"{s['epochs_done']}/{s['total_epochs']}\")")
+          Best loss: $(python -c "import json; s=json.load(open('output/training_status.json')); print(f\"{s['best_loss']:.4f}\")")
+          Status: $(python -c "import json; s=json.load(open('output/training_status.json')); print('COMPLETED' if s['completed'] else 'IN PROGRESS')")" || echo "No changes to commit"
+
+          git push origin "$CHECKPOINT_BRANCH" --force
+
+          # Switch back to the source branch for the rest of the workflow
+          git checkout "${{ github.ref_name }}"
 
       # ------------------------------------------------------------------ #
-      # Check if training is done; if not, wait 5 min and re-trigger
+      # If training is fully done, also push final model to source branch
       # ------------------------------------------------------------------ #
       - name: Check if training is complete
         id: check-done
@@ -213,6 +249,28 @@ jobs:
 
           echo "Training completed: $completed (epochs done: $epochs_done)"
 
+      - name: Push final model to source branch
+        if: steps.check-done.outputs.completed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          mkdir -p output
+          git add output/best_model.pth output/final_model.pth \
+                  output/gallery.json output/gallery.npz \
+                  output/training_status.json
+
+          git commit -m "Add trained model from Mapillary dataset (100% complete)
+
+          Trained on ALL Mapillary Traffic Sign images over ${{ github.event.inputs.run_number }} workflow run(s).
+          Epochs: ${{ steps.check-done.outputs.epochs_done }}/${{ github.event.inputs.epochs }}
+          Best loss: $(python -c "import json; s=json.load(open('output/training_status.json')); print(f\"{s['best_loss']:.4f}\")")" || echo "No changes to commit"
+
+          git push origin "${{ github.ref_name }}"
+
+      # ------------------------------------------------------------------ #
+      # If not done: wait 5 min, re-trigger
+      # ------------------------------------------------------------------ #
       - name: Wait 5 minutes before continuing
         if: steps.check-done.outputs.completed == 'false'
         run: |
@@ -248,9 +306,10 @@ jobs:
           echo "Total runs: ${{ github.event.inputs.run_number }}"
           echo "Epochs completed: ${{ steps.check-done.outputs.epochs_done }}"
           echo ""
-          echo "Artifacts available:"
-          echo "  - trained-model-run-${{ github.event.inputs.run_number }}"
-          echo "    Contains: best_model.pth, gallery.json, gallery.npz"
+          echo "Model has been pushed to branch: ${{ github.ref_name }}"
+          echo "  - output/best_model.pth"
+          echo "  - output/final_model.pth"
+          echo "  - output/gallery.json"
+          echo "  - output/gallery.npz"
           echo ""
-          echo "Download from: Actions → this run → Artifacts"
           cat output/training_status.json
