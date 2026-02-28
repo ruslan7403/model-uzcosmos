@@ -4,7 +4,9 @@ A similarity-based traffic sign recognition system that uses learned embeddings 
 
 ## Key Features
 
-- **Embedding-based recognition** — Signs are identified by similarity in a learned embedding space, not fixed class logits
+- **Object detection** — YOLOv8 detects traffic signs in full scene images with bounding boxes
+- **Embedding-based recognition** — Each detected sign is identified by similarity in a learned embedding space
+- **Visual output** — Annotated images with bounding boxes, class labels, and similarity scores
 - **Open-set recognition** — Unknown signs are detected when no gallery match exceeds the similarity threshold
 - **Incremental learning** — New sign classes can be added with just 1-3 reference images, without retraining the model
 - **Gallery system** — Reference embeddings (prototypes) are stored and managed like face templates in FaceID
@@ -12,11 +14,22 @@ A similarity-based traffic sign recognition system that uses learned embeddings 
 ## Architecture
 
 ```
-Input Image → ResNet-18 Backbone → Projection Head → L2-Normalized Embedding (128-d)
-                                                              ↓
-                                                    Cosine Similarity
-                                                              ↓
-                                                  Gallery Matching → Prediction
+                          Detection + Recognition Pipeline
+                          ================================
+
+Scene Image ──→ YOLOv8 Detector ──→ Bounding Boxes
+                                          │
+                         ┌────────────────┘
+                         ↓
+                    Crop each sign
+                         ↓
+              ResNet-18 Backbone → Projection Head → 128-d Embedding
+                                                          ↓
+                                                 Cosine Similarity
+                                                          ↓
+                                              Gallery Matching → Prediction
+                                                          ↓
+                                          Annotated image with boxes + scores
 ```
 
 The model is trained with **triplet loss**, which encourages:
@@ -33,9 +46,13 @@ traffic_sign_recognition/
 ├── dataset.py           # TripletTrafficSignDataset and transforms
 ├── trainer.py           # Training loop, gallery building, evaluation
 ├── recognizer.py        # High-level TrafficSignRecognizer API
+├── detector.py          # YOLOv8-based traffic sign detector
+├── visualize.py         # Bounding box drawing, labels, and score panels
+├── pipeline.py          # Full detect → crop → embed → match pipeline
 scripts/
 ├── train.py             # CLI training script
-├── recognize.py         # CLI recognition script
+├── recognize.py         # CLI recognition script (single cropped sign)
+├── detect_and_recognize.py  # CLI detection + recognition on scene images
 ├── enroll.py            # CLI enrollment script (incremental learning)
 ├── demo.py              # Full demo with synthetic data
 tests/
@@ -75,7 +92,33 @@ data/train/
 python scripts/train.py --data-dir data/train --output-dir output --epochs 30
 ```
 
-### Recognize a Sign
+### Detect and Recognize Signs in a Scene Image
+
+```bash
+python scripts/detect_and_recognize.py \
+    --image street_photo.jpg \
+    --embedding-model output/best_model.pth \
+    --gallery output/gallery \
+    --output result.jpg
+```
+
+This will:
+1. Detect traffic signs in the image using YOLOv8 (draws bounding boxes)
+2. Recognize each detected sign via embedding similarity (labels + scores)
+3. Save an annotated image with rectangles, class names, and similarity scores
+
+For a custom YOLO model trained specifically on traffic signs:
+```bash
+python scripts/detect_and_recognize.py \
+    --image street_photo.jpg \
+    --yolo-model my_traffic_sign_yolo.pt \
+    --embedding-model output/best_model.pth \
+    --gallery output/gallery \
+    --detect-all \
+    --output result.jpg
+```
+
+### Recognize a Single Cropped Sign
 
 ```bash
 python scripts/recognize.py \
@@ -133,23 +176,50 @@ This system is designed to work with traffic sign datasets such as:
 
 ## API Usage
 
-```python
-from traffic_sign_recognition import EmbeddingNet, SignGallery, TrafficSignRecognizer
+### Full Detection + Recognition Pipeline
 
-# Load trained system
+```python
+from traffic_sign_recognition.pipeline import DetectionRecognitionPipeline
+from PIL import Image
+
+# Load the full pipeline (YOLO detector + embedding recognizer + gallery)
+pipeline = DetectionRecognitionPipeline.load(
+    yolo_model_path="yolov8n.pt",
+    embedding_model_path="output/best_model.pth",
+    gallery_path="output/gallery",
+)
+
+# Process a scene image and get annotated output
+image = Image.open("street_photo.jpg")
+annotated_img, detections = pipeline.process_and_visualize(
+    image,
+    output_path="result.jpg",  # saves annotated image with bboxes + scores
+    with_panel=True,           # side panel with detailed similarity scores
+)
+
+# Inspect each detection
+for det in detections:
+    print(f"Sign: {det.recognized_class}, Score: {det.similarity_score:.2f}, "
+          f"Box: {det.bbox}")
+```
+
+### Recognition Only (Pre-Cropped Images)
+
+```python
+from traffic_sign_recognition import TrafficSignRecognizer
+
 recognizer = TrafficSignRecognizer.load(
     model_path="output/best_model.pth",
     gallery_path="output/gallery",
 )
 
-# Recognize a sign
-prediction, confidence, scores = recognizer.recognize_file("sign.jpg")
+prediction, confidence, scores = recognizer.recognize_file("cropped_sign.jpg")
 if prediction is None:
     print("Unknown sign")
 else:
     print(f"Detected: {prediction} (confidence: {confidence:.2f})")
 
-# Add a new class incrementally
+# Add a new class incrementally (no retraining)
 recognizer.enroll_class("new_sign", ["ref1.jpg", "ref2.jpg"])
 recognizer.save("output/model.pth", "output/gallery")
 ```

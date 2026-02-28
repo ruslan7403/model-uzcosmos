@@ -1,7 +1,7 @@
 """Tests for the traffic sign recognition system.
 
 Uses synthetic images to validate the full pipeline: model, gallery,
-dataset, trainer, and recognizer.
+dataset, trainer, recognizer, detector, visualizer, and pipeline.
 """
 
 import os
@@ -11,11 +11,13 @@ import tempfile
 import numpy as np
 import pytest
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from traffic_sign_recognition.gallery import SignGallery
 from traffic_sign_recognition.model import EmbeddingNet, TripletLoss
 from traffic_sign_recognition.recognizer import TrafficSignRecognizer
+from traffic_sign_recognition.visualize import AnnotatedDetection, draw_detections, draw_detections_with_panel
+from traffic_sign_recognition.detector import Detection
 
 
 def make_synthetic_image(color: tuple[int, int, int], size: int = 64) -> Image.Image:
@@ -297,3 +299,231 @@ class TestIncrementalLearning:
             assert "new_sign" in loaded.class_names
             pred, score, _ = loaded.query(np.array([0.0, 0.1, 0.95]))
             assert pred == "new_sign"
+
+
+class TestDetection:
+    """Tests for the Detection dataclass."""
+
+    def test_detection_creation(self):
+        det = Detection(bbox=(10, 20, 100, 150), confidence=0.85, detector_class="stop sign")
+        assert det.bbox == (10, 20, 100, 150)
+        assert det.confidence == 0.85
+        assert det.detector_class == "stop sign"
+
+    def test_detection_default_class(self):
+        det = Detection(bbox=(0, 0, 50, 50), confidence=0.5)
+        assert det.detector_class == ""
+
+
+class TestAnnotatedDetection:
+    """Tests for AnnotatedDetection dataclass."""
+
+    def test_annotated_detection_creation(self):
+        det = AnnotatedDetection(
+            bbox=(10, 20, 100, 150),
+            detection_confidence=0.9,
+            recognized_class="stop_sign",
+            similarity_score=0.87,
+            all_scores={"stop_sign": 0.87, "yield": 0.3},
+        )
+        assert det.recognized_class == "stop_sign"
+        assert det.similarity_score == 0.87
+        assert len(det.all_scores) == 2
+
+    def test_annotated_detection_unknown(self):
+        det = AnnotatedDetection(
+            bbox=(0, 0, 50, 50),
+            detection_confidence=0.5,
+            recognized_class=None,
+            similarity_score=0.2,
+            all_scores={"stop_sign": 0.2},
+        )
+        assert det.recognized_class is None
+
+
+class TestVisualization:
+    """Tests for the visualization module."""
+
+    def _make_scene_image(self, width=640, height=480) -> Image.Image:
+        """Create a synthetic scene image."""
+        img = Image.new("RGB", (width, height), (100, 150, 200))
+        draw = ImageDraw.Draw(img)
+        # Draw a red circle (fake stop sign)
+        draw.ellipse([50, 50, 150, 150], fill=(220, 30, 30), outline="black")
+        # Draw a yellow triangle (fake warning)
+        draw.polygon([(300, 80), (250, 160), (350, 160)], fill=(255, 200, 0))
+        return img
+
+    def test_draw_detections_returns_image(self):
+        img = self._make_scene_image()
+        detections = [
+            AnnotatedDetection(
+                bbox=(50, 50, 150, 150),
+                detection_confidence=0.95,
+                recognized_class="stop_sign",
+                similarity_score=0.88,
+                all_scores={"stop_sign": 0.88, "yield": 0.2},
+            ),
+        ]
+        result = draw_detections(img, detections)
+        assert isinstance(result, Image.Image)
+        assert result.size == img.size
+
+    def test_draw_detections_multiple(self):
+        img = self._make_scene_image()
+        detections = [
+            AnnotatedDetection(
+                bbox=(50, 50, 150, 150),
+                detection_confidence=0.95,
+                recognized_class="stop_sign",
+                similarity_score=0.88,
+                all_scores={"stop_sign": 0.88},
+            ),
+            AnnotatedDetection(
+                bbox=(250, 80, 350, 160),
+                detection_confidence=0.80,
+                recognized_class="warning",
+                similarity_score=0.75,
+                all_scores={"warning": 0.75},
+            ),
+        ]
+        result = draw_detections(img, detections)
+        assert isinstance(result, Image.Image)
+
+    def test_draw_detections_unknown(self):
+        img = self._make_scene_image()
+        detections = [
+            AnnotatedDetection(
+                bbox=(50, 50, 150, 150),
+                detection_confidence=0.7,
+                recognized_class=None,
+                similarity_score=0.3,
+                all_scores={"stop_sign": 0.3},
+            ),
+        ]
+        result = draw_detections(img, detections, show_unknown=True)
+        assert isinstance(result, Image.Image)
+
+    def test_draw_detections_hide_unknown(self):
+        img = self._make_scene_image()
+        detections = [
+            AnnotatedDetection(
+                bbox=(50, 50, 150, 150),
+                detection_confidence=0.7,
+                recognized_class=None,
+                similarity_score=0.3,
+                all_scores={},
+            ),
+        ]
+        result = draw_detections(img, detections, show_unknown=False)
+        assert isinstance(result, Image.Image)
+
+    def test_draw_detections_empty_list(self):
+        img = self._make_scene_image()
+        result = draw_detections(img, [])
+        assert isinstance(result, Image.Image)
+        assert result.size == img.size
+
+    def test_draw_detections_with_panel(self):
+        img = self._make_scene_image()
+        detections = [
+            AnnotatedDetection(
+                bbox=(50, 50, 150, 150),
+                detection_confidence=0.95,
+                recognized_class="stop_sign",
+                similarity_score=0.88,
+                all_scores={"stop_sign": 0.88, "yield": 0.3, "speed_limit": 0.1},
+            ),
+        ]
+        result = draw_detections_with_panel(img, detections, panel_width=250)
+        assert isinstance(result, Image.Image)
+        # Panel should make the image wider
+        assert result.size[0] == img.size[0] + 250
+
+    def test_save_annotated(self):
+        from traffic_sign_recognition.visualize import save_annotated
+
+        img = self._make_scene_image()
+        detections = [
+            AnnotatedDetection(
+                bbox=(50, 50, 150, 150),
+                detection_confidence=0.9,
+                recognized_class="stop_sign",
+                similarity_score=0.85,
+                all_scores={"stop_sign": 0.85},
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = os.path.join(tmpdir, "annotated.png")
+            result_path = save_annotated(img, detections, out_path)
+            assert os.path.exists(result_path)
+            saved = Image.open(result_path)
+            assert saved.size == img.size
+
+    def test_save_annotated_with_panel(self):
+        from traffic_sign_recognition.visualize import save_annotated
+
+        img = self._make_scene_image()
+        detections = [
+            AnnotatedDetection(
+                bbox=(50, 50, 150, 150),
+                detection_confidence=0.9,
+                recognized_class="stop_sign",
+                similarity_score=0.85,
+                all_scores={"stop_sign": 0.85},
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = os.path.join(tmpdir, "annotated_panel.png")
+            result_path = save_annotated(img, detections, out_path, with_panel=True)
+            assert os.path.exists(result_path)
+            saved = Image.open(result_path)
+            # Should be wider than original due to panel
+            assert saved.size[0] > img.size[0]
+
+
+class TestPipelineCropLogic:
+    """Tests for the detection-recognition pipeline crop logic.
+
+    Tests the pipeline internals without requiring ultralytics installed,
+    by mocking the detector.
+    """
+
+    def test_crop_detection_basic(self):
+        from traffic_sign_recognition.pipeline import DetectionRecognitionPipeline
+
+        model = EmbeddingNet(embedding_dim=64, pretrained=False)
+        recognizer = TrafficSignRecognizer(
+            model=model,
+            gallery=SignGallery(similarity_threshold=0.5),
+            device="cpu",
+        )
+        # Create pipeline with a dummy detector (won't use it for this test)
+        pipeline = DetectionRecognitionPipeline.__new__(DetectionRecognitionPipeline)
+        pipeline.recognizer = recognizer
+        pipeline.crop_padding = 0.1
+
+        img = Image.new("RGB", (640, 480), (100, 100, 100))
+        det = Detection(bbox=(100, 100, 200, 200), confidence=0.9)
+        crop = pipeline._crop_detection(img, det)
+
+        assert isinstance(crop, Image.Image)
+        # Crop should be roughly 100x100 + padding
+        assert crop.size[0] > 0
+        assert crop.size[1] > 0
+
+    def test_crop_detection_respects_image_bounds(self):
+        from traffic_sign_recognition.pipeline import DetectionRecognitionPipeline
+
+        pipeline = DetectionRecognitionPipeline.__new__(DetectionRecognitionPipeline)
+        pipeline.crop_padding = 0.5  # large padding
+
+        img = Image.new("RGB", (200, 200), (100, 100, 100))
+        # Detection near the edge
+        det = Detection(bbox=(0, 0, 50, 50), confidence=0.9)
+        crop = pipeline._crop_detection(img, det)
+
+        assert isinstance(crop, Image.Image)
+        # Should not exceed image bounds
+        assert crop.size[0] <= 200
+        assert crop.size[1] <= 200
