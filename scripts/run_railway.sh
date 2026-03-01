@@ -15,6 +15,9 @@ echo "=== Install dependencies ==="
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
 pip install -q -e .
+# Headless OpenCV so YOLO/ultralytics work without libxcb (no display on Railway)
+pip uninstall -y opencv-python 2>/dev/null || true
+pip install -q opencv-python-headless
 
 echo "=== Download dataset to $DATA_DIR ==="
 mkdir -p "$(dirname "$DATA_DIR")"
