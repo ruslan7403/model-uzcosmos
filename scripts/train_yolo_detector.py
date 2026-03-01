@@ -255,6 +255,32 @@ def train_yolo(
     return str(best_dst)
 
 
+def _fix_dataset_yaml_path(yaml_path: Path, correct_path: Path) -> None:
+    """Ensure dataset.yaml has path and train/val/test set so Ultralytics finds images.
+    Handles both author format (path: ..\Downloads\..., train: images\\train\\) and
+    our normalized layout (train/images, val/images).
+    """
+    correct_path = Path(correct_path).resolve()
+    correct_str = str(correct_path).replace("\\", "/")
+    text = yaml_path.read_text()
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("path:"):
+            lines.append(f"path: {correct_str}")
+        elif stripped.startswith("train:"):
+            # Normalized layout is train/images
+            lines.append("train: train/images")
+        elif stripped.startswith("val:"):
+            lines.append("val: val/images")
+        elif stripped.startswith("test:"):
+            lines.append("test: test/images")
+        else:
+            lines.append(line)
+    yaml_path.write_text("\n".join(lines) + "\n")
+    print(f"Updated dataset.yaml path to: {correct_str}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Train YOLOv8 to detect traffic signs"
@@ -304,11 +330,13 @@ def main():
 
     if args.real_dataset:
         # Train on real YOLO-format dataset (e.g. Kaggle)
-        real_path = Path(args.real_dataset)
+        real_path = Path(args.real_dataset).resolve()
         dataset_yaml = real_path / "dataset.yaml"
         if not dataset_yaml.is_file():
             print(f"ERROR: {dataset_yaml} not found. Need dataset.yaml in --real-dataset path.")
             return
+        # Fix path in dataset.yaml (author yaml often has wrong path like ..\..\Downloads\...)
+        _fix_dataset_yaml_path(dataset_yaml, real_path)
         print(f"Training YOLOv8 on real dataset: {args.real_dataset}")
         model_path = train_yolo(
             dataset_yaml=str(dataset_yaml),
