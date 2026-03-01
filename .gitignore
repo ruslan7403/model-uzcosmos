@@ -9,3 +9,6 @@ output/
 data/
 *.tar.gz
 yolov8n.pt
+
+# Over GitHub 100MB limit (use Git LFS if needed)
+checkpoint.pt
