@@ -27,7 +27,7 @@ Usage:
 """
 
 import argparse
-import os
+import re
 import shutil
 import sys
 import tempfile
@@ -97,9 +97,12 @@ def download_dataset(output_dir: str) -> bool:
         print(f"Dataset root found at: {extracted_root} (layout: {layout})")
 
         root_path = Path(extracted_root)
+        nc_names_from_source: tuple[int, list[str]] | None = None
         if layout == "images_train":
-            # Dataset uses images/train, images/test, labels/train, labels/test -> normalize to train/images, val/images, etc.
+            # Dataset uses images/train, images/validation, images/test -> normalize to train/images, val/images, test/images
             _normalize_images_train_layout(root_path, output_path)
+            # Preserve class names from source dataset.yaml (ts43classes: '0'..'42', ts4classes: prohibitory/danger/mandatory/other)
+            nc_names_from_source = _parse_source_dataset_yaml(root_path)
         else:
             # Standard layout: train/images, valid/images -> move as-is
             for item in root_path.iterdir():
@@ -111,46 +114,52 @@ def download_dataset(output_dir: str) -> bool:
                         dest.unlink()
                 shutil.move(str(item), str(dest))
 
-    _ensure_dataset_yaml(output_path)
+    _ensure_dataset_yaml(output_path, nc_names_override=nc_names_from_source)
     _print_summary(output_path)
     return True
 
 
 def _find_dataset_root(base: str) -> tuple[str | None, str]:
     """Walk *base* for a dir with train/images/ (standard) or images/train/ (alt).
+    For this Kaggle dataset, prefer ts43classes over ts4classes when both exist.
     Returns (root_path, "standard"|"images_train") or (None, "").
     """
     base_path = Path(base)
     max_depth = 5
+    candidates: list[tuple[str, str]] = []  # (path, layout)
 
-    def search(path: Path, depth: int) -> tuple[str | None, str]:
+    def search(path: Path, depth: int) -> None:
         if depth > max_depth:
-            return None, ""
-        # Standard: train/images, valid/images
+            return
         if (path / "train" / "images").is_dir():
-            return str(path), "standard"
-        # This dataset: images/train, images/test, labels/train, labels/test
+            candidates.append((str(path), "standard"))
+            return
         if (path / "images" / "train").is_dir():
-            return str(path), "images_train"
+            candidates.append((str(path), "images_train"))
+            return
         if path.is_dir():
             for child in path.iterdir():
                 if child.is_dir():
-                    found, layout = search(child, depth + 1)
-                    if found is not None:
-                        return found, layout
-        return None, ""
+                    search(child, depth + 1)
 
-    return search(base_path, 0)
+    search(base_path, 0)
+    if not candidates:
+        return None, ""
+    # Prefer ts43classes (43 classes) over ts4classes when both exist
+    for path, layout in candidates:
+        if "ts43classes" in path:
+            return path, layout
+    return candidates[0][0], candidates[0][1]
 
 
 def _normalize_images_train_layout(src_root: Path, dest_root: Path) -> None:
-    """Copy images/train -> train/images, labels/train -> train/labels; same for test -> val."""
-    # Splits: (source images dir, source labels dir) -> (dest split name)
+    """Copy images/train -> train/images, images/validation -> val/images, images/test -> test/images (and labels)."""
+    # Matches dataset.yaml: train, val=validation, test=test
     splits = [
         ("train", "train"),
-        ("test", "val"),   # dataset uses "test" as validation
-        ("valid", "val"),
         ("validation", "val"),
+        ("valid", "val"),
+        ("test", "test"),
     ]
     for src_split, dest_split in splits:
         img_src = src_root / "images" / src_split
@@ -168,13 +177,7 @@ def _normalize_images_train_layout(src_root: Path, dest_root: Path) -> None:
             for f in lbl_src.iterdir():
                 if f.is_file():
                     shutil.copy2(f, lbl_dest / f.name)
-    # Copy dataset.yaml if present
-    for yaml_name in ("dataset.yaml", "data.yaml", "dataset.yml"):
-        yaml_src = src_root / yaml_name
-        if yaml_src.is_file():
-            shutil.copy2(yaml_src, dest_root / yaml_name)
-            print(f"Copied {yaml_name} from dataset.")
-            break
+    # Don't copy source dataset.yaml (paths would be wrong); _ensure_dataset_yaml will generate one.
 
 
 def _print_extracted_structure(base: str, max_lines: int = 120, max_depth: int = 8, sample_files: int = 5) -> None:
@@ -209,8 +212,41 @@ def _print_extracted_structure(base: str, max_lines: int = 120, max_depth: int =
     print("\n".join(lines))
 
 
-def _ensure_dataset_yaml(output_path: Path):
-    """Create a dataset.yaml if the dataset doesn't already include one."""
+def _parse_source_dataset_yaml(src_root: Path) -> tuple[int, list[str]] | None:
+    """Read dataset.yaml in src_root; return (nc, names) or None if missing/unparseable."""
+    for name in ("dataset.yaml", "data.yaml", "dataset.yml"):
+        p = src_root / name
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text()
+        except OSError:
+            continue
+        nc = None
+        names: list[str] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("nc:") and nc is None:
+                try:
+                    nc = int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+            if "names:" in line and "[" in line:
+                # names: [ '0', '1', ... ] or names: [ 'prohibitory', 'danger', ... ]
+                match = re.search(r"\[(.*)\]", line)
+                if match:
+                    inner = match.group(1)
+                    names = [s.strip().strip("'\"").strip() for s in inner.split(",")]
+                break
+        if nc is not None and len(names) >= nc:
+            return nc, names[:nc]
+        if names:
+            return len(names), names
+    return None
+
+
+def _ensure_dataset_yaml(output_path: Path, nc_names_override: tuple[int, list[str]] | None = None):
+    """Create dataset.yaml. Use nc_names_override (from source dataset.yaml) when provided to preserve class names."""
     yaml_candidates = list(output_path.glob("*.yaml")) + list(output_path.glob("*.yml"))
     if yaml_candidates:
         print(f"Using existing dataset config: {yaml_candidates[0].name}")
@@ -221,14 +257,21 @@ def _ensure_dataset_yaml(output_path: Path):
     if (output_path / "valid").is_dir():
         val_name = "valid"
 
-    # Count classes from a sample label file
-    nc, names = _infer_classes(output_path / "train" / "labels")
+    if nc_names_override is not None:
+        nc, names = nc_names_override
+        print(f"Using class names from source dataset.yaml (nc={nc})")
+    else:
+        nc, names = _infer_classes(output_path / "train" / "labels")
 
     yaml_path = output_path / "dataset.yaml"
     yaml_content = (
         f"path: {output_path.resolve()}\n"
         f"train: train/images\n"
         f"val: {val_name}/images\n"
+    )
+    if (output_path / "test" / "images").is_dir():
+        yaml_content += f"test: test/images\n"
+    yaml_content += (
         f"\n"
         f"nc: {nc}\n"
         f"names:\n"

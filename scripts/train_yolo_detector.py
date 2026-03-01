@@ -260,8 +260,12 @@ def main():
         description="Train YOLOv8 to detect traffic signs"
     )
     parser.add_argument(
-        "--sign-dir", type=str, required=True,
-        help="Directory with class subdirectories of cropped sign images",
+        "--sign-dir", type=str, default=None,
+        help="Directory with class subdirs of cropped sign images (for synthetic data only)",
+    )
+    parser.add_argument(
+        "--real-dataset", type=str, default=None,
+        help="Path to YOLO-format dataset (train/images, train/labels, dataset.yaml); skips synthetic",
     )
     parser.add_argument(
         "--output-dir", type=str, default="output",
@@ -298,41 +302,54 @@ def main():
 
     args = parser.parse_args()
 
-    # Collect sign images
-    print(f"Collecting sign images from: {args.sign_dir}")
-    sign_images = collect_sign_images(args.sign_dir)
-    print(f"Found {len(sign_images)} sign images")
-
-    if len(sign_images) < 10:
-        print("ERROR: Need at least 10 sign images to generate training data.")
-        return
-
-    # Generate synthetic dataset
-    synth_dir = os.path.join(args.output_dir, "yolo_dataset")
-    generate_dataset(
-        sign_images=sign_images,
-        output_dir=synth_dir,
-        num_train=args.num_train,
-        num_val=args.num_val,
-        img_size=args.img_size,
-        max_signs_per_image=args.max_signs,
-    )
-
-    # Train YOLO
-    dataset_yaml = os.path.join(synth_dir, "dataset.yaml")
-    print(f"\nTraining YOLOv8 detector...")
-    model_path = train_yolo(
-        dataset_yaml=dataset_yaml,
-        output_dir=args.output_dir,
-        epochs=args.epochs,
-        img_size=args.img_size,
-        batch_size=args.batch_size,
-        base_model=args.base_model,
-    )
-
-    # Clean up synthetic data to save disk space
-    print(f"\nCleaning up synthetic dataset...")
-    shutil.rmtree(synth_dir, ignore_errors=True)
+    if args.real_dataset:
+        # Train on real YOLO-format dataset (e.g. Kaggle)
+        real_path = Path(args.real_dataset)
+        dataset_yaml = real_path / "dataset.yaml"
+        if not dataset_yaml.is_file():
+            print(f"ERROR: {dataset_yaml} not found. Need dataset.yaml in --real-dataset path.")
+            return
+        print(f"Training YOLOv8 on real dataset: {args.real_dataset}")
+        model_path = train_yolo(
+            dataset_yaml=str(dataset_yaml),
+            output_dir=args.output_dir,
+            epochs=args.epochs,
+            img_size=getattr(args, "img_size", 640),
+            batch_size=args.batch_size,
+            base_model=getattr(args, "base_model", "yolov8n.pt"),
+        )
+    else:
+        # Synthetic data from sign crops
+        if not args.sign_dir:
+            print("ERROR: Provide either --real-dataset or --sign-dir")
+            return
+        print(f"Collecting sign images from: {args.sign_dir}")
+        sign_images = collect_sign_images(args.sign_dir)
+        print(f"Found {len(sign_images)} sign images")
+        if len(sign_images) < 10:
+            print("ERROR: Need at least 10 sign images to generate training data.")
+            return
+        synth_dir = os.path.join(args.output_dir, "yolo_dataset")
+        generate_dataset(
+            sign_images=sign_images,
+            output_dir=synth_dir,
+            num_train=args.num_train,
+            num_val=args.num_val,
+            img_size=args.img_size,
+            max_signs_per_image=args.max_signs,
+        )
+        dataset_yaml = os.path.join(synth_dir, "dataset.yaml")
+        print(f"\nTraining YOLOv8 detector...")
+        model_path = train_yolo(
+            dataset_yaml=dataset_yaml,
+            output_dir=args.output_dir,
+            epochs=args.epochs,
+            img_size=args.img_size,
+            batch_size=args.batch_size,
+            base_model=args.base_model,
+        )
+        print(f"\nCleaning up synthetic dataset...")
+        shutil.rmtree(synth_dir, ignore_errors=True)
 
     print(f"\nDone! Use the trained detector:")
     print(f"  python scripts/detect_and_recognize.py \\")
