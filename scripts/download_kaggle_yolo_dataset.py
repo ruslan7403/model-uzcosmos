@@ -84,48 +84,93 @@ def download_dataset(output_dir: str) -> bool:
             return False
 
         # The archive may extract into a subdirectory; find the actual root.
-        extracted_root = _find_dataset_root(tmp)
+        extracted_root, layout = _find_dataset_root(tmp)
         if extracted_root is None:
-            print("ERROR: Could not locate train/images inside extracted data.")
+            print("ERROR: Could not locate train/images or images/train inside extracted data.")
             _print_extracted_structure(tmp)
             return False
 
-        print(f"Dataset root found at: {extracted_root}")
+        print(f"Dataset root found at: {extracted_root} (layout: {layout})")
 
-        # Move contents into the final output directory
-        for item in Path(extracted_root).iterdir():
-            dest = output_path / item.name
-            if dest.exists():
-                if dest.is_dir():
-                    shutil.rmtree(dest)
-                else:
-                    dest.unlink()
-            shutil.move(str(item), str(dest))
+        root_path = Path(extracted_root)
+        if layout == "images_train":
+            # Dataset uses images/train, images/test, labels/train, labels/test -> normalize to train/images, val/images, etc.
+            _normalize_images_train_layout(root_path, output_path)
+        else:
+            # Standard layout: train/images, valid/images -> move as-is
+            for item in root_path.iterdir():
+                dest = output_path / item.name
+                if dest.exists():
+                    if dest.is_dir():
+                        shutil.rmtree(dest)
+                    else:
+                        dest.unlink()
+                shutil.move(str(item), str(dest))
 
     _ensure_dataset_yaml(output_path)
     _print_summary(output_path)
     return True
 
 
-def _find_dataset_root(base: str) -> str | None:
-    """Walk *base* (recursively, up to 5 levels) for a dir containing train/images/."""
+def _find_dataset_root(base: str) -> tuple[str | None, str]:
+    """Walk *base* for a dir with train/images/ (standard) or images/train/ (alt).
+    Returns (root_path, "standard"|"images_train") or (None, "").
+    """
     base_path = Path(base)
     max_depth = 5
 
-    def search(path: Path, depth: int) -> str | None:
+    def search(path: Path, depth: int) -> tuple[str | None, str]:
         if depth > max_depth:
-            return None
+            return None, ""
+        # Standard: train/images, valid/images
         if (path / "train" / "images").is_dir():
-            return str(path)
+            return str(path), "standard"
+        # This dataset: images/train, images/test, labels/train, labels/test
+        if (path / "images" / "train").is_dir():
+            return str(path), "images_train"
         if path.is_dir():
             for child in path.iterdir():
                 if child.is_dir():
-                    found = search(child, depth + 1)
+                    found, layout = search(child, depth + 1)
                     if found is not None:
-                        return found
-        return None
+                        return found, layout
+        return None, ""
 
     return search(base_path, 0)
+
+
+def _normalize_images_train_layout(src_root: Path, dest_root: Path) -> None:
+    """Copy images/train -> train/images, labels/train -> train/labels; same for test -> val."""
+    # Splits: (source images dir, source labels dir) -> (dest split name)
+    splits = [
+        ("train", "train"),
+        ("test", "val"),   # dataset uses "test" as validation
+        ("valid", "val"),
+        ("validation", "val"),
+    ]
+    for src_split, dest_split in splits:
+        img_src = src_root / "images" / src_split
+        lbl_src = src_root / "labels" / src_split
+        if not img_src.is_dir():
+            continue
+        img_dest = dest_root / dest_split / "images"
+        lbl_dest = dest_root / dest_split / "labels"
+        img_dest.mkdir(parents=True, exist_ok=True)
+        lbl_dest.mkdir(parents=True, exist_ok=True)
+        for f in img_src.iterdir():
+            if f.is_file():
+                shutil.copy2(f, img_dest / f.name)
+        if lbl_src.is_dir():
+            for f in lbl_src.iterdir():
+                if f.is_file():
+                    shutil.copy2(f, lbl_dest / f.name)
+    # Copy dataset.yaml if present
+    for yaml_name in ("dataset.yaml", "data.yaml", "dataset.yml"):
+        yaml_src = src_root / yaml_name
+        if yaml_src.is_file():
+            shutil.copy2(yaml_src, dest_root / yaml_name)
+            print(f"Copied {yaml_name} from dataset.")
+            break
 
 
 def _print_extracted_structure(base: str, max_entries: int = 30) -> None:
