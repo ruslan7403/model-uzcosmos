@@ -1,0 +1,41 @@
+{
+    "similarity_threshold": 0.6,
+    "classes": {
+      "archive_02": {
+        "start_idx": 0,
+        "count": 10544
+      },
+      "archive_03": {
+        "start_idx": 10544,
+        "count": 12197
+      },
+      "archive_04": {
+        "start_idx": 22741,
+        "count": 12196
+      },
+      "archive_05": {
+        "start_idx": 34937,
+        "count": 12196
+      },
+      "archive_06": {
+        "start_idx": 47133,
+        "count": 5320
+      },
+      "archive_08": {
+        "start_idx": 52453,
+        "count": 13345
+      },
+      "archive_09": {
+        "start_idx": 65798,
+        "count": 13344
+      },
+      "archive_10": {
+        "start_idx": 79142,
+        "count": 13344
+      },
+      "archive_11": {
+        "start_idx": 92486,
+        "count": 13344
+      }
+    }
+  }

@@ -1,0 +1,5 @@
+# Do not push the code repo
+task-uzcosmos/
+
+# Over GitHub 100MB limit
+checkpoint.pt
