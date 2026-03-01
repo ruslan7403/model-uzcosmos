@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Prepare test images from archive class dirs (full images, no negative crops).
 
-Samples images from data/mapillary (archive_02, archive_03, ...) and copies
-them to data/archive_test for running detection.
+Samples images from a directory with class subdirs (default data/archive) and
+copies them to data/archive_test for running detection.
 """
 
 import random
@@ -12,7 +12,7 @@ from pathlib import Path
 
 # Where archive class dirs live and where to write test images
 ROOT = Path(__file__).resolve().parents[1]
-ARCHIVE_DIR = ROOT / "data" / "mapillary"
+ARCHIVE_DIR = ROOT / "data" / "archive"
 OUTPUT_DIR = ROOT / "data" / "archive_test"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 NUM_IMAGES = 10

@@ -3,7 +3,7 @@
 
 Reads train/images + train/labels (and optionally val, test), crops each bbox,
 saves to output_dir/class_name/ so train.py (triplet/embedding) can use it.
-No Mapillary; single source of truth is Kaggle YOLO.
+Single source of truth is Kaggle YOLO dataset.
 
 Usage:
     python scripts/build_kaggle_crops_for_embedding.py \

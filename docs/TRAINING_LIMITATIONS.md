@@ -23,7 +23,7 @@ The pipeline has **three trained / data-dependent parts**. Any of them can cause
 ## 2. Embedding model (recognition) – `best_model.pth`
 
 **How it’s trained:**  
-Triplet loss on **archive class directories** (e.g. `data/mapillary/archive_02`, …). The model learns to map each crop to a 128‑dim L2‑normalized vector so that same-class signs are close and different-class signs are far.
+Triplet loss on **class directories** (e.g. from Kaggle crops: `data/kaggle_crops/class_name`, …). The model learns to map each crop to a 128‑dim L2‑normalized vector so that same-class signs are close and different-class signs are far.
 
 **Why it’s not perfect:**
 - **Training data = clean crops** – Training uses full sign crops from the dataset. At inference you feed **YOLO crops** (often smaller, blurry, partial, different aspect). Distribution shift can lower similarity or cause confusion between similar classes.
@@ -41,7 +41,7 @@ Triplet loss on **archive class directories** (e.g. `data/mapillary/archive_02`,
 All (or a subset of) images from the **same class dirs** used for embedding training are embedded and stored as prototypes per class. Recognition = nearest prototype (cosine similarity) and a **similarity threshold** (e.g. 0.6).
 
 **Why it’s not perfect:**
-- **Coverage** – Only classes present in the data (e.g. archive_02 … archive_11). Any other sign type is forced to match the nearest class or fall below threshold and become “unknown”.
+- **Coverage** – Only classes present in the data (e.g. from the Kaggle/crops class dirs). Any other sign type is forced to match the nearest class or fall below threshold and become “unknown”.
 - **Threshold** – If `similarity_threshold` is too low, wrong classes get chosen; if too high, valid signs are marked unknown.
 - **Prototype quality** – Gallery is as good as the embedding model and the images used. Noisy or rare views can bias matches.
 - **No explicit rejection model** – Decision is “max similarity vs threshold”; there’s no separate “this is not any known sign” model.

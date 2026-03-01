@@ -3,7 +3,7 @@
 
 Usage:
     python scripts/build_gallery.py --model output/best_model.pth \
-        --data-dir data/mapillary --output output/gallery
+        --data-dir data/kaggle_crops --output output/gallery
 """
 import argparse
 import torch
@@ -14,7 +14,7 @@ from traffic_sign_recognition.trainer import build_gallery
 def main():
     p = argparse.ArgumentParser(description="Build gallery from model + dataset")
     p.add_argument("--model", required=True, help="Path to best_model.pth")
-    p.add_argument("--data-dir", default="data/mapillary", help="Dataset with class subdirs")
+    p.add_argument("--data-dir", default="data/kaggle_crops", help="Dataset with class subdirs")
     p.add_argument("--output", default="output/gallery", help="Base path for gallery.json + .npz")
     p.add_argument("--limit", type=int, default=None, metavar="N", help="Use at most N images (for quick testing)")
     p.add_argument("--embedding-dim", type=int, default=128)
