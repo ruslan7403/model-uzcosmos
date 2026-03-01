@@ -266,12 +266,17 @@ def train(
     # Save final model
     torch.save(model.state_dict(), os.path.join(output_dir, "final_model.pth"))
 
-    # Build gallery from training data
-    print("\nBuilding gallery from training data...")
-    gallery = build_gallery(model, data_dir, device, image_size, gallery_threshold)
-    gallery.save(os.path.join(output_dir, "gallery"))
+    # Build gallery from training data (skip if already present, e.g. after redeploy)
+    gallery_path = os.path.join(output_dir, "gallery")
+    if os.path.exists(f"{gallery_path}.json") and os.path.exists(f"{gallery_path}.npz"):
+        print("\nGallery already exists at output, skipping build.")
+        gallery = SignGallery.load(gallery_path)
+    else:
+        print("\nBuilding gallery from training data...")
+        gallery = build_gallery(model, data_dir, device, image_size, gallery_threshold)
+        gallery.save(gallery_path)
 
-    print(f"Gallery built with {gallery.num_classes} classes, "
+    print(f"Gallery: {gallery.num_classes} classes, "
           f"{gallery.total_prototypes()} total prototypes")
 
     return model, gallery

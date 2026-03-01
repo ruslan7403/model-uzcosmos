@@ -45,12 +45,15 @@ In the same service, open **Variables** and add:
 | `OUTPUT_DIR`   | `/data/output`  | Model checkpoints and artifacts (optional) |
 | `EPOCHS`       | `100`           | Embedding training epochs (set `1` for a quick run) |
 | `YOLO_EPOCHS`  | `30`            | YOLO detector training epochs (default 30) |
+| `RUN_YOLO_ONLY`| *(unset)*       | Set to `1` to skip download and embedding training and only run YOLO detector training |
 | `BATCH_SIZE`   | `32`            | Default 32 if unset            |
 | `TRIPLETS_PER_EPOCH` | `10000` | Default 10000 if unset   |
 
 If you only set **`DATA_ROOT=/data`**, the script uses `/data/mapillary` and `/data/output` by default.
 
 **Quick run (1 epoch + YOLO):** Set `EPOCHS=1` to train the embedding model for one epoch only, then the script still runs YOLO detector training. Your tar from `/data/output` will include `best_model.pth`, `checkpoint.pt`, and `traffic_sign_yolo.pt`.
+
+**YOLO only (finish just the detector):** If embedding training and gallery are already done and you only need to run the YOLO step (e.g. after a crash during YOLO training), set `RUN_YOLO_ONLY=1`. The script will skip download and embedding training and only run `train_yolo_detector.py`, writing `traffic_sign_yolo.pt` to `/data/output`. After that, unset `RUN_YOLO_ONLY` or remove it so the next run does the full pipeline again if needed.
 
 ---
 

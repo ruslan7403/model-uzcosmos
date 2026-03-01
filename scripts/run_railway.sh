@@ -19,6 +19,23 @@ pip install -q -e .
 pip uninstall -y opencv-python 2>/dev/null || true
 pip install -q opencv-python-headless
 
+# Run only YOLO detector training (skip download + embedding training + gallery)
+if [ -n "${RUN_YOLO_ONLY}" ] && [ "${RUN_YOLO_ONLY}" != "0" ]; then
+  echo "=== RUN_YOLO_ONLY: skipping download and embedding training ==="
+  mkdir -p "$OUTPUT_DIR"
+  echo "=== Train custom YOLO detector (traffic_sign only) ==="
+  python scripts/train_yolo_detector.py \
+    --sign-dir "$DATA_DIR" \
+    --output-dir "$OUTPUT_DIR" \
+    --epochs "${YOLO_EPOCHS:-30}" \
+    --num-train 2000 \
+    --num-val 400 \
+    --batch-size 16 \
+    --img-size 640
+  echo "=== Done. YOLO: $OUTPUT_DIR/traffic_sign_yolo.pt ==="
+  exit 0
+fi
+
 echo "=== Download dataset to $DATA_DIR ==="
 mkdir -p "$(dirname "$DATA_DIR")"
 mkdir -p "$OUTPUT_DIR"
