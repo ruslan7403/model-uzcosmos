@@ -6,3 +6,6 @@ dist/
 build/
 output/
 .pytest_cache/
+data/
+*.tar.gz
+yolov8n.pt
