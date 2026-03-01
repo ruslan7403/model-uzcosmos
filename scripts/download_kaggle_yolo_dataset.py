@@ -87,6 +87,7 @@ def download_dataset(output_dir: str) -> bool:
         extracted_root = _find_dataset_root(tmp)
         if extracted_root is None:
             print("ERROR: Could not locate train/images inside extracted data.")
+            _print_extracted_structure(tmp)
             return False
 
         print(f"Dataset root found at: {extracted_root}")
@@ -107,26 +108,54 @@ def download_dataset(output_dir: str) -> bool:
 
 
 def _find_dataset_root(base: str) -> str | None:
-    """Walk *base* looking for a directory that contains train/images/."""
+    """Walk *base* (recursively, up to 5 levels) for a dir containing train/images/."""
     base_path = Path(base)
+    max_depth = 5
 
-    # Direct check
-    if (base_path / "train" / "images").is_dir():
-        return str(base_path)
+    def search(path: Path, depth: int) -> str | None:
+        if depth > max_depth:
+            return None
+        if (path / "train" / "images").is_dir():
+            return str(path)
+        if path.is_dir():
+            for child in path.iterdir():
+                if child.is_dir():
+                    found = search(child, depth + 1)
+                    if found is not None:
+                        return found
+        return None
 
-    # One level deep
-    for child in base_path.iterdir():
-        if child.is_dir() and (child / "train" / "images").is_dir():
-            return str(child)
+    return search(base_path, 0)
 
-    # Two levels deep
-    for child in base_path.iterdir():
-        if child.is_dir():
-            for grandchild in child.iterdir():
-                if grandchild.is_dir() and (grandchild / "train" / "images").is_dir():
-                    return str(grandchild)
 
-    return None
+def _print_extracted_structure(base: str, max_entries: int = 30) -> None:
+    """Print the extracted directory structure for debugging."""
+    base_path = Path(base)
+    lines: list[str] = []
+
+    def walk(p: Path, prefix: str, depth: int) -> None:
+        if depth > 4 or len(lines) >= max_entries:
+            return
+        try:
+            entries = sorted(p.iterdir())[:15]
+        except OSError:
+            return
+        for i, entry in enumerate(entries):
+            name = entry.name
+            if entry.is_dir():
+                lines.append(f"{prefix}{name}/")
+                if len(lines) < max_entries:
+                    walk(entry, prefix + "  ", depth + 1)
+            else:
+                lines.append(f"{prefix}{name}")
+            if len(lines) >= max_entries:
+                break
+
+    lines.append("Extracted structure:")
+    walk(base_path, "  ", 0)
+    if len(lines) >= max_entries:
+        lines.append("  ...")
+    print("\n".join(lines))
 
 
 def _ensure_dataset_yaml(output_path: Path):
