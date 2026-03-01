@@ -83,11 +83,15 @@ def download_dataset(output_dir: str) -> bool:
             print("~/.kaggle/kaggle.json exists with valid credentials.")
             return False
 
+        # Always print what Kaggle actually extracted (so we can adapt the code to the real structure).
+        print("=== Kaggle extracted structure ===")
+        _print_extracted_structure(tmp)
+        print("=== End structure ===")
+
         # The archive may extract into a subdirectory; find the actual root.
         extracted_root, layout = _find_dataset_root(tmp)
         if extracted_root is None:
             print("ERROR: Could not locate train/images or images/train inside extracted data.")
-            _print_extracted_structure(tmp)
             return False
 
         print(f"Dataset root found at: {extracted_root} (layout: {layout})")
@@ -173,33 +177,35 @@ def _normalize_images_train_layout(src_root: Path, dest_root: Path) -> None:
             break
 
 
-def _print_extracted_structure(base: str, max_entries: int = 30) -> None:
-    """Print the extracted directory structure for debugging."""
+def _print_extracted_structure(base: str, max_lines: int = 120, max_depth: int = 8, sample_files: int = 5) -> None:
+    """Print the full extracted directory structure so we can adapt code to the real layout."""
     base_path = Path(base)
     lines: list[str] = []
 
     def walk(p: Path, prefix: str, depth: int) -> None:
-        if depth > 4 or len(lines) >= max_entries:
+        if depth > max_depth or len(lines) >= max_lines:
             return
         try:
-            entries = sorted(p.iterdir())[:15]
+            entries = sorted(p.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
         except OSError:
             return
-        for i, entry in enumerate(entries):
-            name = entry.name
-            if entry.is_dir():
-                lines.append(f"{prefix}{name}/")
-                if len(lines) < max_entries:
-                    walk(entry, prefix + "  ", depth + 1)
-            else:
-                lines.append(f"{prefix}{name}")
-            if len(lines) >= max_entries:
-                break
+        dirs = [e for e in entries if e.is_dir()]
+        files = [e for e in entries if e.is_file()]
+        for entry in dirs:
+            if len(lines) >= max_lines:
+                return
+            lines.append(f"{prefix}{entry.name}/")
+            walk(entry, prefix + "  ", depth + 1)
+        # Show files: first sample_files, then count if more
+        if files:
+            for f in files[:sample_files]:
+                lines.append(f"{prefix}{f.name}")
+            if len(files) > sample_files:
+                lines.append(f"{prefix}... ({len(files)} files total)")
+        if len(lines) >= max_lines:
+            lines.append(prefix + "... (truncated)")
 
-    lines.append("Extracted structure:")
-    walk(base_path, "  ", 0)
-    if len(lines) >= max_entries:
-        lines.append("  ...")
+    walk(base_path, "", 0)
     print("\n".join(lines))
 
 
