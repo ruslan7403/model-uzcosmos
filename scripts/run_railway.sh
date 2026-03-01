@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Railway entrypoint: Kaggle YOLO only (no Mapillary).
+# Railway entrypoint: Kaggle YOLO pipeline.
 # 1) Download Kaggle YOLO traffic sign dataset
 # 2) Build class-per-folder crops from it for embedding training
 # 3) Train embedding model on those crops

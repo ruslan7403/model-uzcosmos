@@ -8,7 +8,7 @@ people, cars, and other non-sign objects.
 
 Usage:
     python scripts/train_yolo_detector.py \
-        --sign-dir data/mapillary \
+        --sign-dir data/kaggle_crops \
         --output-dir output \
         --epochs 50
 """
@@ -256,8 +256,8 @@ def train_yolo(
 
 
 def _fix_dataset_yaml_path(yaml_path: Path, correct_path: Path) -> None:
-    """Ensure dataset.yaml has path and train/val/test set so Ultralytics finds images.
-    Handles both author format (path: ..\Downloads\..., train: images\\train\\) and
+    r"""Ensure dataset.yaml has path and train/val/test set so Ultralytics finds images.
+    Handles both author format (path: ..\Downloads\..., train: images\train\) and
     our normalized layout (train/images, val/images).
     """
     correct_path = Path(correct_path).resolve()
